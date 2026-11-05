@@ -1,0 +1,14 @@
+.benny-settings.json
+.benny-settings.json.*
+.env
+.env.*
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.pyc
+*.log
+models/*
+!models/README.md
+.DS_Store
+Thumbs.db
