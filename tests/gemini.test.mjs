@@ -1,6 +1,6 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
-import {geminiReply} from '../gemini.mjs';
+import {geminiReply,geminiStream} from '../gemini.mjs';
 const messages=[{role:'system',content:'Benny rules'},{role:'user',content:'Hello'},{role:'assistant',content:'Hi'},{role:'user',content:'Space?'}];
 test('Gemini maps history and sends key in header, not URL',async()=>{
  const text=await geminiReply({key:'test-secret',model:'gemini-2.5-flash',messages,fetchImpl:async(url,options)=>{
@@ -45,4 +45,35 @@ test('persistent overload stops after three calls; auth and quota errors are not
 test('temporary connection errors recover; safety-blocked replies are not retried',async()=>{
  let calls=0;await geminiReply({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{if(++calls===1)throw new TypeError('fetch failed');return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'Hello!'}]}}]});}});assert.equal(calls,2);
  calls=0;await assert.rejects(geminiReply({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{calls++;return Response.json({promptFeedback:{blockReason:'SAFETY'}});}}));assert.equal(calls,1);
+});
+function streamBody(sse){return new ReadableStream({start(controller){const encoder=new TextEncoder();for(const chunk of sse)controller.enqueue(encoder.encode(chunk));controller.close();}});}
+const line=event=>'data: '+JSON.stringify(event)+'\n\n';
+test('Gemini streaming parses SSE deltas, skips thoughts and yields complete text immediately',async()=>{
+ const events=[{candidates:[{content:{parts:[{thought:true,text:'hmm'}]}}]},{candidates:[{content:{parts:[{text:'Bear-y awesome!'}]}}]},{candidates:[{finishReason:'STOP',content:{parts:[{text:' What else?'},{text:''}]}}]}];
+ const text=await geminiStream({key:'test',model:'gemini-3.5-flash',messages,fetchImpl:async()=>({ok:true,body:streamBody([line(events[0]),line(events[1]),line(events[2])])})});
+ // collect text in parallel: stream returns as it goes
+});
+test('Gemini streaming collects partial words one by one and finishes without error on STOP',async()=>{
+ const events=[{candidates:[{content:{parts:[{text:'Bear-y '}]}}]},{candidates:[{content:{parts:[{text:'awesome!'},{thought:true,text:'quiet'}]}}]},{candidates:[{finishReason:'STOP',content:{parts:[]}}]}];
+ const parts=[];for await(const text of geminiStream({key:'test',model:'gemini-3.5-flash',messages,fetchImpl:async()=>({ok:true,body:streamBody([line(events[0]),line(events[1]),line(events[2])])})}))parts.push(text);
+ assert.deepEqual(parts,['Bear-y ','awesome!']);
+});
+test('Gemini streaming rejects blocked prompts and empty results without retry',async()=>{
+ const drain=stream=>(async()=>{for await(const t of stream)void t;})();
+ await assert.rejects(()=>drain(geminiStream({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{calls+=1;return {ok:true,body:streamBody([line({promptFeedback:{blockReason:'SAFETY'}})])};}})),/blocked or did not complete/);
+ await assert.rejects(()=>drain(geminiStream({key:'test',model:'gemini-3.5-flash',messages,fetchImpl:async()=>({ok:true,body:streamBody([line({candidates:[{finishReason:'STOP',content:{parts:[]}}]})])})})),/returned no text/);
+});
+let calls=0;
+test('temporary stream connection errors recover before any text is emitted',async()=>{
+ calls=0;const parts=[];for await(const text of geminiStream({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{calls++;if(calls<2)throw new TypeError('fetch failed');return {ok:true,body:streamBody([line({candidates:[{content:{parts:[{text:'Hi buddy!'}]}}]}),line({candidates:[{finishReason:'STOP'}]})])};}}))parts.push(text);
+ assert.equal(calls,2);assert.deepEqual(parts,['Hi buddy!']);
+ await assert.rejects(async()=>{for await(const t of geminiStream({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{calls++;return new Response('{}',{status:503})}}))parts.push(t,t);});
+ assert.equal(calls,5);
+});
+test('stream retries only on 5xx, exactly like non-stream requests',async()=>{
+ let attempts=0;const parts=[];
+ await assert.rejects(async()=>{for await(const t of geminiStream({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{attempts++;return new Response('{}',{status:503});}}))void t;},/503/);
+ assert.equal(attempts,3);
+ attempts=0;await assert.rejects(async()=>{for await(const t of geminiStream({key:'test',model:'gemini-3.5-flash',messages,sleepImpl:async()=>{},fetchImpl:async()=>{attempts++;return new Response('{}',{status:429});}}))void t;},/429/);
+ assert.equal(attempts,1);
 });

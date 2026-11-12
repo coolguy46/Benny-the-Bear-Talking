@@ -4,14 +4,37 @@ const session=crypto.randomUUID();
 let config, busy=false, muted=false, epoch=0, player=null, audioURL=null, recording=null;
 let localVoices=[];
 async function api(path,data={}){const r=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Benny-Token':token},body:JSON.stringify({session,...data})});const type=r.headers.get('content-type');if(type?.startsWith('audio/')){if(!r.ok)throw Error('Voice unavailable');return r.blob();}const b=await r.json();if(!r.ok)throw Error(b.error);return b;}
-function sayBubble(text,who='benny'){const el=document.createElement('div');el.className='bubble '+who;const label=document.createElement('span');label.className='speaker';label.textContent=who==='benny'?'BENNY':'YOU';el.append(label,document.createTextNode(text));$('conversation').append(el);while($('conversation').children.length>20)$('conversation').firstChild.remove();$('conversation').scrollTop=$('conversation').scrollHeight;}
+function sayBubble(text,who='benny'){const el=document.createElement('div');el.className='bubble '+who;const label=document.createElement('span');label.className='speaker';label.textContent=who==='benny'?'BENNY':'YOU';el.append(label,document.createTextNode(text));$('conversation').append(el);while($('conversation').children.length>20)$('conversation').firstChild.remove();scrollEnd();return el;}
 function state(text,talking=false){$('state').textContent=text;$('bear').classList.toggle('speaking',talking);}
 function haltAudio(){if('speechSynthesis'in window)speechSynthesis.cancel();if(player){player.pause();player.src='';player=null;}if(audioURL){URL.revokeObjectURL(audioURL);audioURL=null;}state(muted?'Benny is muted':'Ready for a bear-y good chat');}
 function controls(){for(const id of ['send','message'])$(id).disabled=busy||muted;$('reset').disabled=busy;$('record').disabled=busy||muted||!config?.mic;document.querySelectorAll('[data-topic]').forEach(b=>b.disabled=busy||muted);}
-async function speak(reply,onStart=()=>{}){let started=false;const reveal=()=>{if(!started){started=true;onStart();}};if(muted||!$('autovoice').checked){reveal();return;}const stamp=epoch;haltAudio();if(config.voice==='piper'){
- try{state('Getting Benny’s voice ready…');const blob=await api('tts',{id:reply.id});if(stamp!==epoch||muted)return;audioURL=URL.createObjectURL(blob);player=new Audio(audioURL);player.onplaying=()=>{if(stamp===epoch&&!muted){reveal();state('Benny is speaking',true);}};player.onended=()=>{haltAudio();};player.onerror=()=>{reveal();haltAudio();$('notice').textContent='Audio playback failed. Check your speaker.';};await player.play();}catch(e){if(stamp===epoch){reveal();state('Voice unavailable');$('notice').textContent=e.message;}}
- }else{if(!localVoices.length){reveal();$('notice').textContent='No installed offline English voice was found. Replies are available as text. Install a system voice or configure Piper.';return;}const u=new SpeechSynthesisUtterance(reply.text);u.voice=localVoices.find(v=>v.voiceURI===$('voices').value)||localVoices[0];u.rate=.92;u.pitch=1.08;u.onstart=()=>{if(stamp===epoch){reveal();state('Benny is speaking',true);}};u.onend=()=>{if(stamp===epoch)state('Ready for a bear-y good chat');};u.onerror=()=>{if(stamp===epoch){reveal();state('Voice paused');}};speechSynthesis.speak(u);}}
-async function send(text){if(busy||muted||!text.trim())return;epoch++;haltAudio();busy=true;controls();sayBubble(text,'child');$('message').value='';$('notice').textContent='';state('Benny is thinking…');const stamp=epoch;try{const reply=await api('chat',{text});if(stamp!==epoch)return;if(reply.notice)$('notice').textContent=reply.notice;state('Getting Benny ready to speak...');await speak(reply,()=>sayBubble(reply.text));}catch(e){if(stamp===epoch){$('notice').textContent=e.message;$('message').value=text;state('Let’s try again');}}finally{busy=false;controls();if(!muted)$('message').focus();}}
+async function chatSend(text,onItem){
+ const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Benny-Token':token},body:JSON.stringify({session,text})});
+ if(!r.ok||!(r.headers.get('content-type')||'').includes('ndjson'))throw Error(((await r.json().catch(()=>({}))).error)||'Request failed');
+ const reader=r.body.getReader(),decoder=new TextDecoder();
+ let buffer='',error=null;
+ for(;;){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});
+ for(;;){const i=buffer.indexOf('\n');if(i<0)break;const line=buffer.slice(0,i).trim();buffer=buffer.slice(i+1);if(!line)continue;let data=null;try{data=JSON.parse(line);}catch(e){continue;}if(data.error)error=data.error;else if(data.id)onItem(data);}}
+ return error;
+}
+function scrollEnd(){$('conversation').scrollTop=$('conversation').scrollHeight;}
+function playBlob(blob,stamp,reveal){return new Promise((resolve,reject)=>{audioURL=URL.createObjectURL(blob);player=new Audio(audioURL);player.onplaying=()=>{if(stamp===epoch&&!muted){reveal();state('Benny is speaking',true);}};player.onended=resolve;player.onerror=()=>reject(new Error('Audio playback failed. Check your speaker.'));player.play().catch(reject);});}
+async function playReply(items,stamp){
+ let bubble=null;
+ const reveal=item=>{if(bubble)bubble.appendChild(document.createTextNode(' '+item.text));else bubble=sayBubble(item.text,'benny');scrollEnd();};
+  if(config.voice==='piper'&&speakable()){
+  const blobs=new Map(items.map(it=>[it.id,api('tts',{id:it.id}).catch(e=>e)]));
+  for(const item of items){
+   if(stamp!==epoch)return;
+   try{const blob=await blobs.get(item.id);if(stamp!==epoch||muted)return;if(blob instanceof Error)throw blob;await playBlob(blob,stamp,()=>reveal(item));}
+   catch(e){reveal(item);$('notice').textContent=e.message;}
+  }
+   }else if(config.voice!=='piper'){if(!localVoices.length){for(const item of items)reveal(item);$('notice').textContent='No installed offline English voice was found. Replies are available as text. Install a system voice or configure Piper.';return;}for(const item of items){if(stamp!==epoch)return;const u=new SpeechSynthesisUtterance(item.text);u.voice=localVoices.find(v=>v.voiceURI===$('voices').value)||localVoices[0];u.rate=.92;u.pitch=1.08;u.onstart=()=>{if(stamp===epoch){reveal(item);state('Benny is speaking',true);}};u.onerror=()=>{};speechSynthesis.speak(u);}}
+ else for(const item of items)reveal(item);
+ if(stamp===epoch&&!muted)state('Ready for a bear-y good chat');
+}
+function speakable(){return !muted&&$('autovoice').checked;}
+async function send(text){if(busy||muted||!text.trim())return;epoch++;haltAudio();busy=true;controls();sayBubble(text,'child');$('message').value='';$('notice').textContent='';state('Benny is thinking…');const stamp=epoch,items=[];try{const error=await chatSend(text,o=>items.push(o));if(stamp!==epoch)return;if(!items.length&&error)throw Error(error);state('Getting Benny ready to speak…');await playReply(items,stamp);if(error)$('notice').textContent=error;}catch(e){if(stamp===epoch){$('notice').textContent=e.message;$('message').value=text;state('Let’s try again');}}finally{busy=false;controls();if(!muted)$('message').focus();}}
 $('form').onsubmit=e=>{e.preventDefault();send($('message').value);};document.querySelectorAll('[data-topic]').forEach(b=>b.onclick=()=>send(b.dataset.topic));
 $('stop').onclick=()=>{muted=true;epoch++;haltAudio();if(recording)finishRecording(false);$('resume').hidden=false;controls();};
 $('resume').onclick=()=>{muted=false;$('resume').hidden=true;state('Ready for a bear-y good chat');controls();};

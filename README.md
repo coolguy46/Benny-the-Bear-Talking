@@ -21,7 +21,7 @@ python3 -m venv .venv
 sh start.sh
 ```
 
-Open localhost:8787 in Chromium on the Pi. The launcher detects .venv and models/. For different locations, set BENNY_PYTHON, BENNY_VOSK_MODEL and BENNY_PIPER_MODEL. Pi performance and package compatibility require testing on your hardware. No local language model is needed in this version.
+Open localhost:8787 in Chromium on the Pi. The launcher detects .venv and models/. For different locations, set BENNY_PYTHON, BENNY_VOSK_MODEL, BENNY_PIPER_MODEL. Pi performance and package compatibility require testing on your hardware. No local language model is needed in this version.
 
 Run node --test for mocked integration tests of Gemini-only routing, original prompt, errors, authorization and key handling.
 

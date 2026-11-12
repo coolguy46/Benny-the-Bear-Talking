@@ -22,6 +22,32 @@ def main():
             except Exception:
                 response = {'id': request['id'], 'error': 'synthesis failed'}
             print(json.dumps(response), flush=True)
+    elif mode == 'listen-serve':
+        import base64
+        import vosk
+        vosk.SetLogLevel(-1)
+        model = vosk.Model(os.environ['BENNY_VOSK_MODEL'])
+        for line in sys.stdin:
+            request = json.loads(line)
+            try:
+                recognizer, words = None, []
+                with wave.open(io.BytesIO(base64.b64decode(request['audio'])), 'rb') as audio:
+                    if audio.getnchannels() != 1 or audio.getsampwidth() != 2 or audio.getcomptype() != 'NONE':
+                        raise ValueError('Expected mono PCM16 WAV')
+                    if audio.getnframes() / audio.getframerate() > 20:
+                        raise ValueError('Recording exceeds 20 seconds')
+                    recognizer = vosk.KaldiRecognizer(model, audio.getframerate())
+                    while True:
+                        data = audio.readframes(4000)
+                        if not data:
+                            break
+                        if recognizer.AcceptWaveform(data):
+                            words.append(json.loads(recognizer.Result()).get('text', ''))
+                    words.append(json.loads(recognizer.FinalResult()).get('text', ''))
+                response = {'id': request['id'], 'text': ' '.join(w for w in words if w)}
+            except Exception:
+                response = {'id': request['id'], 'error': 'transcription failed'}
+            print(json.dumps(response), flush=True)
     elif mode == 'listen':
         import vosk
         vosk.SetLogLevel(-1)
