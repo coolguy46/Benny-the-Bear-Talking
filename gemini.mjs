@@ -7,24 +7,31 @@ export function geminiError(e){return e.name==='TimeoutError'?'Gemini timed out.
 async function connect({key,model,messages,fetchImpl=fetch,sleepImpl=delay,url}){
  if(!key)throw Error('Add a Gemini API key in Gemini settings.');
  if(!/^[a-zA-Z0-9._-]+$/.test(model))throw Error('Invalid Gemini model name.');
- const deadline=Date.now()+45000;
- let response;
+  const deadline=Date.now()+45000;
+ let response,lastError;
  for(let attempt=0;attempt<3;attempt++){
-  try{response=await fetchImpl(url,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify(payload(messages)),signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});}
+  // Give each attempt an equal slice of the remaining budget so one stalled
+  // request cannot consume the whole deadline and skip the retries.
+  const remaining=deadline-Date.now();
+  if(remaining<=0)break;
+  const attemptTimeout=Math.max(1,Math.ceil(remaining/(3-attempt)));
+  try{response=await fetchImpl(url,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify(payload(messages)),signal:AbortSignal.timeout(attemptTimeout)});}
   catch(e){
-  if(attempt===2||Date.now()>=deadline||e.name==='TimeoutError'||!(e instanceof TypeError))throw e;
+  lastError=e;
+  if(attempt===2||Date.now()>=deadline||(e.name!=='TimeoutError'&&!(e instanceof TypeError)))throw e;
   await sleepImpl(Math.min(1000*2**attempt+Math.floor(Math.random()*250),Math.max(0,deadline-Date.now())));continue;
   }
   if(!retryStatuses.includes(response.status)||attempt===2)break;
   await response.body?.cancel();
-  const remaining=deadline-Date.now();if(remaining<=0)throw new DOMException('Gemini timed out','TimeoutError');
+  const left=deadline-Date.now();if(left<=0)throw new DOMException('Gemini timed out','TimeoutError');
   const retryAfter=response.headers?.get?.('retry-after');
   const seconds=Number(retryAfter);
   const serverDelay=retryAfter?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(retryAfter)-Date.now())):0;
   const wait=Math.max(1000*2**attempt+Math.floor(Math.random()*250),Number.isFinite(serverDelay)?serverDelay:0);
-  if(wait>=remaining)break;
+  if(wait>=left)break;
   await sleepImpl(wait);
  }
+ if(!response)throw lastError||new DOMException('Gemini timed out','TimeoutError');
  // Do not surface provider error bodies: they can contain request details.
  if(!response.ok)throw Error(`Gemini ${response.status}: ${descriptions[response.status]||'Service unavailable. Try again later.'}`);
  return response;

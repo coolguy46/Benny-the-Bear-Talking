@@ -25,7 +25,7 @@ Open localhost:8787 in Chromium on the Pi. The launcher detects .venv and models
 
 Run node --test for mocked integration tests of Gemini-only routing, original prompt, errors, authorization and key handling.
 
-Temporary Gemini 500/502/503/504 and connection failures are retried up to two times with increasing delays, within a 45-second request deadline. Authentication, quota and safety-block errors are not retried. Failed questions are restored to the input for manual retry. No alternate provider or canned reply is used.
+Temporary Gemini 500/502/503/504, connection failures and timeouts are retried up to two times with increasing delays, within a 45-second request deadline. Each attempt gets an equal slice of the remaining time, so one stalled request cannot use the whole deadline and block the retries. Authentication, quota and safety-block errors are not retried. Failed questions are restored to the input for manual retry. No alternate provider or canned reply is used.
 
 Speech latency: Piper now stays loaded in a persistent process, started with the server. Replies are revealed when playback begins rather than before synthesis. Gemini/network time and synthesis time still exist; this is not zero-latency streaming. The prompt includes occasional elementary-appropriate healthy habits, inclusive movement, teamwork and fair play.
 
